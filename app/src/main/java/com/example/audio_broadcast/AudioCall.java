@@ -11,6 +11,7 @@ import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.projection.MediaProjection;
 import android.os.Build;
+import android.os.ParcelFileDescriptor;
 import android.util.Log;
 import android.view.View;
 
@@ -18,6 +19,8 @@ import androidx.annotation.RequiresApi;
 import androidx.core.app.ActivityCompat;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -51,7 +54,7 @@ public class AudioCall {
 
 	public void startCall() {
 
-		startMic();
+//		startMic();
 		startSpeakers();
 	}
 
@@ -72,7 +75,7 @@ public class AudioCall {
 		speakers = false;
 	}
 
-	public void startMic() {
+	public void startMic(ParcelFileDescriptor file) {
 		// Creates the thread for capturing and transmitting audio
 		mic = true;
 		Thread thread = new Thread(new Runnable() {
