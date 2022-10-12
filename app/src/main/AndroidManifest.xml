@@ -27,10 +27,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Audio_broadcast"
         tools:targetApi="31">
-        <service
-            android:name=".Background_server"
-            android:enabled="true"
-            android:exported="true"></service>
+
 
         <activity
             android:name=".MainActivity"

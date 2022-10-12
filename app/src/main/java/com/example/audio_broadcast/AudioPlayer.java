@@ -3,9 +3,14 @@ package com.example.audio_broadcast;
 import static android.os.Process.THREAD_PRIORITY_AUDIO;
 import static android.os.Process.setThreadPriority;
 
+import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
+import android.media.MediaPlayer;
+import android.media.audiofx.AcousticEchoCanceler;
+import android.media.audiofx.LoudnessEnhancer;
+import android.media.audiofx.NoiseSuppressor;
 import android.util.Log;
 
 import java.io.IOException;
@@ -18,7 +23,9 @@ import java.io.InputStream;
  */
 public class AudioPlayer {
     private static final String TAG = "Player";
-    /** The audio stream we're reading from. */
+    /**
+     * The audio stream we're reading from.
+     */
     private final InputStream mInputStream;
 
     /**
@@ -27,7 +34,9 @@ public class AudioPlayer {
      */
     private volatile boolean mAlive;
 
-    /** The background thread recording audio for us. */
+    /**
+     * The background thread recording audio for us.
+     */
     private Thread mThread;
 
     /**
@@ -39,12 +48,16 @@ public class AudioPlayer {
         mInputStream = inputStream;
     }
 
-    /** @return True if currently playing. */
+    /**
+     * @return True if currently playing.
+     */
     public boolean isPlaying() {
         return mAlive;
     }
 
-    /** Starts playing the stream. */
+    /**
+     * Starts playing the stream.
+     */
     public void start() {
         mAlive = true;
         mThread =
@@ -58,10 +71,23 @@ public class AudioPlayer {
                                 new AudioTrack(
                                         AudioManager.STREAM_MUSIC,
                                         buffer.sampleRate,
-                                        AudioFormat.CHANNEL_OUT_MONO,
+                                        AudioFormat.CHANNEL_OUT_STEREO,
                                         AudioFormat.ENCODING_PCM_16BIT,
                                         buffer.size,
                                         AudioTrack.MODE_STREAM);
+//                            MediaPlayer mp = new MediaPlayer();
+//                            mp.setDataSource();
+//                            mp.setAudioAttributes();
+//                        AudioAttributes ad =
+//                        LoudnessEnhancer enhancer = new LoudnessEnhancer(audioTrack.getAudioSessionId());
+//
+//
+//                        NoiseSuppressor.create(audioTrack.getAudioSessionId());
+//
+//                        AcousticEchoCanceler.create(audioTrack.getAudioSessionId());
+//
+//                        enhancer.setTargetGain(10000);
+//                        enhancer.setEnabled(true);
                         audioTrack.play();
 
                         int len;
@@ -90,7 +116,9 @@ public class AudioPlayer {
         }
     }
 
-    /** Stops playing the stream. */
+    /**
+     * Stops playing the stream.
+     */
     public void stop() {
         stopInternal();
         try {
@@ -101,8 +129,11 @@ public class AudioPlayer {
         }
     }
 
-    /** The stream has now ended. */
-    protected void onFinish() {}
+    /**
+     * The stream has now ended.
+     */
+    protected void onFinish() {
+    }
 
     private static class Buffer extends AudioBuffer {
         @Override

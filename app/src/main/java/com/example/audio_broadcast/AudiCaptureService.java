@@ -1,15 +1,16 @@
 package com.example.audio_broadcast;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.app.Service;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import androidx.core.app.NotificationCompat.Builder;
-
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
@@ -18,6 +19,7 @@ import android.media.AudioManager;
 import android.media.AudioPlaybackCaptureConfiguration;
 import android.media.AudioRecord;
 import android.media.AudioTrack;
+import android.media.MediaRecorder;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.net.DhcpInfo;
@@ -27,10 +29,18 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
+import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
+import androidx.annotation.WorkerThread;
 import androidx.core.app.ActivityCompat;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+
+import com.google.android.gms.nearby.connection.ConnectionInfo;
+import com.google.android.gms.nearby.connection.Payload;
+import com.google.android.gms.nearby.connection.Strategy;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -39,90 +49,86 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.SocketException;
-import java.net.UnknownHostException;
-import java.nio.Buffer;
+import java.util.Objects;
 
-public class AudiCaptureService extends Service {
+public class AudiCaptureService extends ConnectionNearby {
+    public static final Strategy STRATEGY = Strategy.P2P_STAR;
     private static final int SERVICE_ID = 123;
-    private static final Object NOTIFICATION_CHANNEL_ID = "AudioCapture channel" ;
+    private static final String LOG_TAG = "Connection Nearby";
+    private static final Object NOTIFICATION_CHANNEL_ID = "AudioCapture channel";
+    private static final int SAMPLE_RATE = 44000; // Hertz
+    private static final int SAMPLE_INTERVAL = 20; // Milliseconds
+    private static final int SAMPLE_SIZE = 4; // Bytes
+    private static final int BUF_SIZE = SAMPLE_INTERVAL * SAMPLE_INTERVAL * SAMPLE_SIZE * 2; //Bytes
+    private final IBinder binder = new LocalBinder();
+    private final BroadcastReceiver rec_advertise = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+//            if(intent.getAction()=='')
+            startAdvertising();
+        }
+    };
+    private final BroadcastReceiver rec_discover = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+//            if(intent.getAction()=='')
+            startDiscovering();
+        }
+    };
+    private final BroadcastReceiver rec_stop = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+//            if(intent.getAction()=='')
+            stopDiscovering();
+            startAdvertising();
+
+        }
+    };
+    private State state = State.UNKNOWN;
     private MediaProjection mediaProjection;
     private MediaProjectionManager mediaProjectionManager;
-    private static final String LOG_TAG = "AudioCall";
-    private static final int SAMPLE_RATE = 8000; // Hertz
-    private static final int SAMPLE_INTERVAL = 20; // Milliseconds
-    private static final int SAMPLE_SIZE = 2; // Bytes
-    private static final int BUF_SIZE = SAMPLE_INTERVAL * SAMPLE_INTERVAL * SAMPLE_SIZE * 2; //Bytes
     private InetAddress address; // Address to call
     private int port = 50000; // Port the packets are addressed to
     private boolean mic = false; // Enable mic?
     private boolean speakers = false; // Enable speakers?
-    private final IBinder binder = new LocalBinder();
     private boolean mAlive;
+    @Nullable
+    private AudioPlayer mAudioPlayer;
 
-
-    public class LocalBinder extends Binder {
-        public AudiCaptureService getServerInstance() {
-            // Return this instance of LocalService so clients can call public methods
-            return AudiCaptureService.this;
-        }
-    }
-
-
+    @RequiresApi(api = Build.VERSION_CODES.O)
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
 
         String word = intent.getAction();
-        if(word=="AudioCaptureService:Start"){
+        if (word == "nearby:start") {
+            setState(State.SEARCHING);
+        }
+        if (word == "AudioCaptureService:Start") {
 
+            Notification notification = new Notification.
+                    Builder(getApplicationContext(), "channel1")
+                    .setOngoing(true)
+                    .setSmallIcon(R.mipmap.ic_launcher)
+                    .setCategory(Notification.CATEGORY_SERVICE)
+                    .setContentTitle("Hello Guys")
+                    .build();
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                this.startForeground(123, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+            }
+            mediaProjectionManager = (MediaProjectionManager) getApplicationContext().getSystemService(Context.MEDIA_PROJECTION_SERVICE);
             mediaProjection = mediaProjectionManager.getMediaProjection(Activity.RESULT_OK,
                     intent.getParcelableExtra("AudioCaptureService:Extra:ResultData"));
 //            Intent
             System.out.println(mediaProjection);
-        mAlive=true;
-        }
+            mAlive = true;
 
+            startRecording();
+
+        }
         return super.onStartCommand(intent, flags, startId);
     }
 
-    @Nullable
-    @Override
-    public IBinder onBind(Intent intent) {
-        return binder;
-    }
-
-    @RequiresApi(api = Build.VERSION_CODES.O)
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        this.createNotificationChannel();
-        Notification notification = new Notification.
-                Builder(getApplicationContext(), "channel1")
-                .setOngoing(true)
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setCategory(Notification.CATEGORY_SERVICE)
-                .setContentTitle("Hello Guys")
-                .build();
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            this.startForeground(123,notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
-        }
-        mediaProjectionManager = (MediaProjectionManager) getApplicationContext().getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-        try {
-            address = getBroadcastAddress();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    @RequiresApi(api = Build.VERSION_CODES.O)
-    private void createNotificationChannel(){
-        String channelId = "channel1";
-        NotificationChannel channel = new NotificationChannel(channelId, "ChannelOne", NotificationManager.IMPORTANCE_HIGH);
-
-        NotificationManager manager = (NotificationManager) getSystemService(NotificationManager.class);
-        manager.createNotificationChannel(channel);
-
-    }
     private InetAddress getBroadcastAddress() throws IOException {
         WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         DhcpInfo dhcp = wifi.getDhcpInfo();
@@ -133,18 +139,6 @@ public class AudiCaptureService extends Service {
         for (int k = 0; k < 4; k++)
             quads[k] = (byte) (broadcast >> (k * 8));
         return InetAddress.getByAddress(quads);
-    }
-    public void startCall() {
-
-//        startMic();
-        startSpeakers();
-    }
-
-    public void endCall() {
-
-        Log.i(LOG_TAG, "Ending call!");
-        muteMic();
-        muteSpeakers();
     }
 
     public void muteMic() {
@@ -173,13 +167,13 @@ public class AudiCaptureService extends Service {
                 AudioFormat audioFormat = new AudioFormat.Builder()
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                         .setSampleRate(SAMPLE_RATE)
-                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO).build();
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build();
 
                 AudioPlaybackCaptureConfiguration config = null;
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     config = new AudioPlaybackCaptureConfiguration.Builder(mediaProjection).addMatchingUsage(AudioAttributes.USAGE_MEDIA).build();
                 }
-
+                MediaRecorder ms= new MediaRecorder();
 
                 AudioRecord audioRecorder = null;
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -194,8 +188,8 @@ public class AudiCaptureService extends Service {
 
 
                 }
-
-                AudiCaptureService.Buffer buffer  = new AudiCaptureService.Buffer();
+                assert audioRecorder != null;
+                AudiCaptureService.Buffer buffer = new AudiCaptureService.Buffer();
 
 //                try {
 //                    // Create a socket and start recording
@@ -270,6 +264,7 @@ public class AudiCaptureService extends Service {
             private boolean isRecording() {
                 return mAlive;
             }
+
             private void stopInternal() {
                 mAlive = false;
                 try {
@@ -282,10 +277,9 @@ public class AudiCaptureService extends Service {
         thread.start();
     }
 
-
     public void startSpeakers() {
         // Creates the thread for receiving and playing back audio
-        if(!speakers) {
+        if (!speakers) {
 
             speakers = true;
             Thread receiveThread = new Thread(new Runnable() {
@@ -302,7 +296,7 @@ public class AudiCaptureService extends Service {
                         DatagramSocket socket = new DatagramSocket(port, InetAddress.getByName("0.0.0.0"));
                         socket.setBroadcast(true);
                         byte[] buf = new byte[BUF_SIZE];
-                        while(speakers) {
+                        while (speakers) {
                             // Play back the audio received from packets
                             DatagramPacket packet = new DatagramPacket(buf, BUF_SIZE);
                             socket.receive(packet);
@@ -317,13 +311,11 @@ public class AudiCaptureService extends Service {
                         track.release();
                         speakers = false;
                         return;
-                    }
-                    catch(SocketException e) {
+                    } catch (SocketException e) {
 
                         Log.e(LOG_TAG, "SocketException: " + e.toString());
                         speakers = false;
-                    }
-                    catch(IOException e) {
+                    } catch (IOException e) {
 
                         Log.e(LOG_TAG, "IOException: " + e.toString());
                         speakers = false;
@@ -333,6 +325,213 @@ public class AudiCaptureService extends Service {
             receiveThread.start();
         }
     }
+
+    private void startRecording() {
+        Log.v(LOG_TAG, "startRecording()");
+        Thread thread = new Thread(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        ParcelFileDescriptor[] payloadPipe = new ParcelFileDescriptor[0];
+                        try {
+                            payloadPipe = ParcelFileDescriptor.createPipe();
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+
+                        // Send the first half of the payload (the read side) to Nearby Connections.
+                        send(Payload.fromStream(payloadPipe[0]));
+
+                        // Use the second half of the payload (the write side) in AudioRecorder.
+                        startMic(payloadPipe[1]);
+
+                    }
+                }
+        );
+        thread.start();
+    }
+
+    private void stopRecording() {
+        Log.v(LOG_TAG, "stopRecording()");
+    }
+
+    @Override
+    protected void onEndpointDiscovered(Endpoint endpoint) {
+        // We found an advertiser!
+        stopDiscovering();
+        connectToEndpoint(endpoint);
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.O)
+    private void createNotificationChannel() {
+        String channelId = "channel1";
+        NotificationChannel channel = new NotificationChannel(channelId, "ChannelOne", NotificationManager.IMPORTANCE_HIGH);
+
+        NotificationManager manager = (NotificationManager) getSystemService(NotificationManager.class);
+        manager.createNotificationChannel(channel);
+
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.O)
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        registerReceiver(rec_advertise, new IntentFilter("com.nearby.intent.action.advertise"));
+        registerReceiver(rec_discover, new IntentFilter("com.nearby.intent.action.discover"));
+        registerReceiver(rec_stop, new IntentFilter("com.nearby.intent.action.stop"));
+        this.createNotificationChannel();
+        Intent advertiseintent = new Intent("com.nearby.intent.action.advertise");
+        @SuppressLint("UnspecifiedImmutableFlag") PendingIntent advertpi = PendingIntent.getBroadcast(getApplicationContext(), 0, advertiseintent, PendingIntent.FLAG_IMMUTABLE);
+
+        Intent discoverIntent = new Intent("com.nearby.intent.action.discover");
+        @SuppressLint("UnspecifiedImmutableFlag") PendingIntent discoverpi = PendingIntent.getBroadcast(getApplicationContext(), 0, discoverIntent, PendingIntent.FLAG_IMMUTABLE);
+
+        Intent stopIntent = new Intent("com.nearby.intent.action.stop");
+        @SuppressLint("UnspecifiedImmutableFlag") PendingIntent stoppi = PendingIntent.getBroadcast(getApplicationContext(), 0, stopIntent, PendingIntent.FLAG_IMMUTABLE);
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, "channel1")
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle("Nearby")
+                .addAction(R.drawable.ic_stat_a, "Adv", advertpi)
+                .addAction(R.drawable.ic_stat_name, "DIS", discoverpi)
+                .addAction(R.drawable.ic_stat_stop, "STOP", stoppi);
+        NotificationManagerCompat notificationManager = NotificationManagerCompat.from(getApplicationContext());
+
+// notificationId is a unique int for each notification that you must define
+        notificationManager.notify(34543, builder.build());
+
+    }
+
+    @Override
+    public void onDestroy() {
+        setState(State.UNKNOWN);
+        super.onDestroy();
+    }
+
+    @Override
+    protected void onConnectionInitiated(Endpoint endpoint, ConnectionInfo connectionInfo) {
+        // A connection to another device has been initiated! We'll use the auth token, which is the
+        // same on both devices, to pick a color to use when we're connected. This way, users can
+        // visually see which device they connected with.
+//        mConnectedColor = COLORS[connectionInfo.getAuthenticationToken().hashCode() % COLORS.length];
+
+        // We accept the connection immediately.
+        acceptConnection(endpoint);
+    }
+
+    @Override
+    protected void onEndpointConnected(Endpoint endpoint) {
+        Toast.makeText(
+                        this, "Connected to %s" + endpoint.getName(), Toast.LENGTH_SHORT)
+                .show();
+        setState(State.CONNECTED);
+    }
+
+    private void setState(State ntate) {
+//        state=connected;
+        State oldState = state;
+        state = ntate;
+//        onStateChanged(oldState, ntate);
+    }
+
+    //    private TextView cstate;
+    @SuppressLint("SetTextI18n")
+    private void onStateChanged(State oldState, State newState) {
+//        cstate=(TextView) findViewById(R.id.currentState);
+
+        // Update Nearby Connections to the new state.
+        switch (newState) {
+            case SEARCHING:
+//                cstate.setText("Searching");
+                disconnectFromAllEndpoints();
+                startDiscovering();
+                startAdvertising();
+                break;
+            case CONNECTED:
+//                cstate.setText("Connecting");
+
+                stopDiscovering();
+                stopAdvertising();
+                break;
+            case UNKNOWN:
+//                cstate.setText("Unkown");
+
+                stopAllEndpoints();
+                break;
+            default:
+                // no-op
+                break;
+        }
+
+    }
+
+    @Override
+    protected void onEndpointDisconnected(Endpoint endpoint) {
+        Toast.makeText(
+                        this, String.format("Disconnected from %s", endpoint.getName()), Toast.LENGTH_SHORT)
+                .show();
+        setState(State.SEARCHING);
+    }
+
+    @Override
+    protected void onConnectionFailed(Endpoint endpoint) {
+        if (state == State.SEARCHING) {
+            startDiscovering();
+        }
+        super.onConnectionFailed(endpoint);
+    }
+
+    /**
+     * Someone connected to us has sent us data. Override this method to act on the event.
+     *
+     * @param endpoint The sender.
+     * @param payload  The data.
+     */
+    @Override
+    protected void onReceive(Endpoint endpoint, Payload payload) {
+        super.onReceive(endpoint, payload);
+        if (payload.getType() == Payload.Type.STREAM) {
+            if (mAudioPlayer != null) {
+                mAudioPlayer.stop();
+                mAudioPlayer = null;
+            }
+
+            AudioPlayer player =
+                    new AudioPlayer(Objects.requireNonNull(payload.asStream()).asInputStream()) {
+                        @WorkerThread
+                        @Override
+                        protected void onFinish() {
+                            mAudioPlayer = null;
+                        }
+                    };
+            mAudioPlayer = player;
+            player.start();
+        }
+
+    }
+
+//    private void sendPayload(final String endPointId,Payload payload){
+//
+//
+//
+//        Nearby.getConnectionsClient(getApplicationContext()).sendPayload(endPointId,payload).addOnSuccessListener(new OnSuccessListener<Void>() {
+//            @Override
+//            public void onSuccess(Void unused) {
+//
+//            }
+//        }).addOnFailureListener(new OnFailureListener() {
+//            @Override
+//            public void onFailure(@NonNull Exception e) {
+//
+//            }
+//        });
+//    }
+
+    public enum State {
+        UNKNOWN,
+        SEARCHING,
+        CONNECTED
+    }
+
     private static class Buffer extends AudioBuffer {
         @Override
         protected boolean validSize(int size) {
@@ -343,6 +542,13 @@ public class AudiCaptureService extends Service {
         protected int getMinBufferSize(int sampleRate) {
             return AudioRecord.getMinBufferSize(
                     sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        }
+    }
+
+    public class LocalBinder extends Binder {
+        public AudiCaptureService getServerInstance() {
+            // Return this instance of LocalService so clients can call public methods
+            return AudiCaptureService.this;
         }
     }
 }
